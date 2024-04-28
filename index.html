@@ -1,0 +1,143 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Remove Background</title>
+</head>
+<body>
+<div class="container" style="display: none;">
+    <input type="file" accept="image/*">
+    <input type="range" readonly min="0" max="100" value="0">
+    <span class="progressText"></span>
+</div>
+<p class="message">加载中</p>
+<hr>
+<img src="" alt="" >
+<script>
+    class RmBg {
+        upload = document.querySelector('input[type="file"]');
+        worker = new Worker('worker.js');
+        workerInit = false;
+        modelPath = './83a65899bf8993a4021c1ba76808abb0.tf';
+        modelParams = null;
+        canvas = document.createElement('canvas');
+        progress = document.querySelector('input[type="range"]');
+        progressText = document.querySelector('.progressText');
+        container = document.querySelector('.container');
+        message = document.querySelector('.message');
+        preview = document.querySelector('img');
+
+        cmdHandler = {
+            Init: () => {
+                this.workerInit = true
+            },
+            predictFinish: (payload) => {
+                const {width, height, data} = payload;
+                const ctx = this.canvas.getContext('2d');
+                const buffer = new Uint8Array(data, 0, width * height * 4);
+                const imageData = ctx.createImageData(width, height);
+                imageData.data.set(buffer);
+                ctx.putImageData(imageData, 0, 0)
+
+                this.preview.src = this.canvas.toDataURL()
+            },
+
+            progressCB: (data) => {
+                const {val, maxVal} = data
+                this.progress.value = val / maxVal * 100
+                this.progressText.innerText = `${this.progress.value}%`
+            }
+
+        }
+
+        constructor() {
+            this.setup()
+        }
+
+        async setup() {
+            this.initEventListeners()
+            this.message.innerText = '加载worker中...'
+            this.initWorker()
+            this.message.innerText = '加载模型中...'
+            this.modelParams = await this.loadTfModule(this.modelPath)
+            this.container.style.display = 'block'
+            this.message.style.display = 'none'
+        }
+
+        initWorker() {
+            this.worker.onmessage =  (event) => {
+                console.log('Received message from worker:', event.data);
+                this.onmessage(event.data)
+            };
+            this.worker.onerror =  (event) => {
+                console.error('Error in worker:', event.message, event.filename, event.lineno);
+            };
+        }
+
+        initEventListeners() {
+            this.upload.addEventListener('change', (e) => {
+                // 判断是不是图片
+                const file = e.target.files[0];
+                if (!file.type.startsWith('image/')) {
+                    alert('请上传图片');
+                    this.upload.value = '';
+                    return
+                }
+
+                this.postMessageToWorker(file)
+            })
+        }
+
+        imgToBuffer(img) {
+            // 返回 [width, height, buffer]
+            const fileReader = new FileReader();
+            return new Promise((resolve, reject) => {
+                fileReader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = (event) => {
+                        this.canvas.width = img.width;
+                        this.canvas.height = img.height;
+                        const ctx = this.canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        const data = ctx.getImageData(0, 0, img.width, img.height);
+                        const src = event.target.src;
+                        resolve([img.width, img.height, data, src])
+                    };
+                    img.src = e.target.result
+                };
+                fileReader.readAsDataURL(img)
+            })
+        }
+
+        async postMessageToWorker(img) {
+            const [width, height, data, src] = await this.imgToBuffer(img);
+            this.preview.src = src;
+            const buffer = data.data.buffer;
+            const message = {
+                cmd: "predict",
+                width: width,
+                height: height,
+                data: buffer,
+                params: this.modelParams
+            };
+            this.worker.postMessage(message, [buffer])
+        }
+
+        onmessage(data) {
+            const handler = this.cmdHandler[data.cmd];
+            if (handler) {
+                handler(data)
+            }
+        }
+
+        async loadTfModule(path) {
+            const response = await fetch(path);
+            return await response.arrayBuffer()
+        }
+    }
+
+    new RmBg()
+</script>
+</body>
+</html>
